@@ -1,7 +1,7 @@
 {
   "name": "@cubiczan/chp-mcp",
-  "version": "0.1.1",
-  "description": "MCP server for CHP Profile B \u2014 evaluate_spend_gate and approve_spend over @cubiczan/chp",
+  "version": "0.1.2",
+  "description": "Spend approval gate for AI agents \u2014 enforce budget limits, per-asset caps and human-in-the-loop thresholds before an agent moves money, with a signed audit hash.",
   "mcpName": "io.github.icohangar-ops/chp-mcp",
   "type": "module",
   "main": "./dist/index.js",
@@ -22,11 +22,20 @@
   },
   "keywords": [
     "mcp",
+    "model-context-protocol",
+    "mcp-server",
+    "spend-approval",
+    "spend-limits",
+    "budget-guard",
+    "approval-gate",
+    "human-in-the-loop",
+    "hitl",
+    "agent-governance",
+    "audit-trail",
     "chp",
     "consensus-hardening",
-    "spend-gate",
-    "finance",
-    "governance"
+    "claude",
+    "cursor"
   ],
   "author": "Shyam Desigan <sam@cubiczan.com>",
   "license": "MIT",

@@ -10,6 +10,14 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+
+// Read the version from package.json so serverInfo cannot drift from the
+// published package. createRequire keeps this working under ESM/NodeNext,
+// where a bare require is unavailable and JSON import assertions vary by
+// Node version.
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const { version: PKG_VERSION } = require("../package.json") as { version: string };
 import {
   CHP_VERSION,
   approveHuman,
@@ -54,7 +62,7 @@ const actionSchema = z.object({
 export function createServer(): McpServer {
   const server = new McpServer({
     name: "chp-mcp",
-    version: "0.1.0",
+    version: PKG_VERSION,
   });
 
   server.tool(
@@ -131,7 +139,7 @@ export function createServer(): McpServer {
     {},
     async () =>
       jsonContent({
-        mcp: "@cubiczan/chp-mcp@0.1.0",
+        mcp: `@cubiczan/chp-mcp@${PKG_VERSION}`,
         chp_profile: "B",
         chp_version: CHP_VERSION,
         engine: "@cubiczan/chp",

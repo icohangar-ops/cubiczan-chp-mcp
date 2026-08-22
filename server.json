@@ -1,17 +1,17 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.icohangar-ops/chp-mcp",
-  "description": "CHP Profile B spend/HITL gate: evaluate_spend_gate, approve_spend, content hash.",
+  "description": "Spend approval gate for AI agents: budget caps, HITL thresholds, signed audit hash.",
   "repository": {
     "url": "https://github.com/icohangar-ops/cubiczan-chp-mcp",
     "source": "github"
   },
-  "version": "0.1.1",
+  "version": "0.1.2",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@cubiczan/chp-mcp",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "transport": {
         "type": "stdio"
       }
