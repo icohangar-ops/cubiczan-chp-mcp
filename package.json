@@ -1,12 +1,12 @@
 {
   "name": "@cubiczan/chp-mcp",
   "version": "0.1.2",
-  "description": "Spend approval gate for AI agents \u2014 enforce budget limits, per-asset caps and human-in-the-loop thresholds before an agent moves money, with a signed audit hash.",
+  "description": "Spend approval gate for AI agents — enforce budget limits, per-asset caps and human-in-the-loop thresholds before an agent moves money, with a signed audit hash.",
   "mcpName": "io.github.icohangar-ops/chp-mcp",
   "type": "module",
   "main": "./dist/index.js",
   "bin": {
-    "chp-mcp": "./bin/chp-mcp.js"
+    "chp-mcp": "bin/chp-mcp.js"
   },
   "files": [
     "dist",
