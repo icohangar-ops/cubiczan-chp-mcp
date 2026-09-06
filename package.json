@@ -21,7 +21,7 @@
     "build": "tsc -p tsconfig.json && node -e \"const fs=require('fs');const p='dist/index.js';let t=fs.readFileSync(p,'utf8');if(!t.startsWith('#!'))fs.writeFileSync(p,'#!/usr/bin/env node\\n'+t);fs.chmodSync(p,0o755)\"",
     "start": "node dist/index.js",
     "dev": "node --import tsx src/index.ts",
-    "test": "npm run build && node --test dist/*.test.js",
+    "test": "npm run build && node --test dist/*.test.js && node --import tsx --test test/**/*.test.ts",
     "prepublishOnly": "npm run build",
     "mcpb:pack": "bash scripts/mcpb-pack.sh",
     "mcpb:validate": "mcpb validate manifest.json",
@@ -68,6 +68,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
+    "tsx": "^4.20.0",
     "typescript": "^5.8.0"
   },
   "publishConfig": {
