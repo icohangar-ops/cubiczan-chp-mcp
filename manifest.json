@@ -1,8 +1,8 @@
 {
   "manifest_version": "0.2",
   "name": "@cubiczan/chp-mcp",
-  "version": "0.1.2",
-  "description": "Spend approval gate for AI agents — enforce budget limits, per-asset caps and human-in-the-loop thresholds before an agent moves money, with a signed audit hash.",
+  "version": "0.2.0",
+  "description": "Spend + tool-approval gate for AI agents — budget caps, HITL, and signed receipts so an MCP allowlist is never treated as authorization.",
   "author": {
     "name": "Shyam Desigan <sam@cubiczan.com>"
   },
