@@ -1,0 +1,5 @@
+schema: spec-driven
+context: |
+  @cubiczan/chp-mcp is a thin MCP transport over @cubiczan/chp (Profile B).
+  New capabilities should reuse CHP canonical JSON, contentHash, and HMAC
+  signing — do not invent a second digest family. Do not rename the package.

@@ -1,0 +1,26 @@
+{
+  "version": "tool-approval-1",
+  "allowed_tools": [
+    "stripe.create_charge",
+    "github.create_issue",
+    "fs.write_file"
+  ],
+  "always_require_receipt": [
+    "stripe.create_charge",
+    "fs.write_file",
+    "github.create_issue"
+  ],
+  "tool_risk": {
+    "stripe.create_charge": "critical",
+    "fs.write_file": "high",
+    "github.create_issue": "medium"
+  },
+  "default_risk": "high",
+  "max_ttl_seconds": 300,
+  "allowed_resources": {
+    "stripe.create_charge": ["acct_live_acme"],
+    "fs.write_file": ["repo:acme/app"],
+    "github.create_issue": ["github.com/acme/app"]
+  },
+  "deny_on_ambiguity": true
+}

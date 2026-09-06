@@ -1,7 +1,7 @@
 {
   "name": "@cubiczan/chp-mcp",
-  "version": "0.1.2",
-  "description": "Spend approval gate for AI agents — enforce budget limits, per-asset caps and human-in-the-loop thresholds before an agent moves money, with a signed audit hash.",
+  "version": "0.2.0",
+  "description": "Spend + tool-approval gate for AI agents — budget caps, HITL, and signed receipts so an MCP allowlist is never treated as authorization.",
   "mcpName": "io.github.icohangar-ops/chp-mcp",
   "type": "module",
   "main": "./dist/index.js",
@@ -11,13 +11,17 @@
   "files": [
     "dist",
     "bin",
+    "examples",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "!dist/*.test.js",
+    "!dist/*.test.d.ts"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json && node -e \"const fs=require('fs');const p='dist/index.js';let t=fs.readFileSync(p,'utf8');if(!t.startsWith('#!'))fs.writeFileSync(p,'#!/usr/bin/env node\\n'+t);fs.chmodSync(p,0o755)\"",
     "start": "node dist/index.js",
     "dev": "node --import tsx src/index.ts",
+    "test": "npm run build && node --test dist/*.test.js",
     "prepublishOnly": "npm run build",
     "mcpb:pack": "bash scripts/mcpb-pack.sh",
     "mcpb:validate": "mcpb validate manifest.json",
@@ -32,6 +36,9 @@
     "spend-limits",
     "budget-guard",
     "approval-gate",
+    "approval-receipt",
+    "tool-authorization",
+    "allowlist",
     "human-in-the-loop",
     "hitl",
     "agent-governance",
