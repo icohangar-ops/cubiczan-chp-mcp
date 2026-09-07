@@ -1,9 +1,14 @@
 /**
- * CHP Profile B MCP server — thin transport over @cubiczan/chp.
+ * CHP Profile B MCP server — spend gate, tool-approval receipts, deny ledger.
  *
  * Tools:
  *   evaluate_spend_gate      — policy gate on a proposed action
  *   approve_spend            — human approval when HITL_REQUIRED
+ *   request_authorization    — mint a bound receipt (or HITL / structured deny)
+ *   place_equity_order       — synthetic gated equity order
+ *   wire_treasury_transfer   — synthetic gated treasury wire
+ *   rebalance_portfolio      — synthetic gated portfolio rebalance
+ *   inspect_audit_ledger     — CHP-chained deny / authorize / execute log
  *   evaluate_tool_approval   — allowlist ≠ authorization; bind a proposed call
  *   issue_approval_receipt   — human allow/deny → signed receipt
  *   authorize_tool_call      — consume a receipt (deny on drift/expiry/replay)
@@ -14,21 +19,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
-// Read the version from package.json so serverInfo cannot drift from the
-// published package. createRequire keeps this working under ESM/NodeNext,
-// where a bare require is unavailable and JSON import assertions vary by
-// Node version.
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { version: PKG_VERSION } = require("../package.json") as { version: string };
-import {
-  CHP_VERSION,
-  approveHuman,
-  contentHash,
-  evaluateGate,
-  type GatePolicy,
-  type ProposedAction,
-} from "@cubiczan/chp";
+import { CHP_VERSION, contentHash, type GatePolicy, type ProposedAction } from "@cubiczan/chp";
 import {
   authorizeToolCall,
   defaultDecisionLog,
@@ -36,11 +30,14 @@ import {
   evaluateToolApproval,
   issueApprovalReceipt,
 } from "./approval.js";
+import { DENY_REASON_CODES, type AuthorizationReceipt, openLedger } from "./audit.js";
 import { RECEIPT_KEY_ENV } from "./receipt.js";
+import { createRuntime, type ChpRuntime } from "./runtime.js";
 
-function jsonContent(data: unknown) {
+function jsonContent(data: unknown, isError = false) {
   return {
     content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+    ...(isError ? { isError: true } : {}),
   };
 }
 
@@ -68,6 +65,19 @@ const actionSchema = z.object({
   notional: z.number(),
   confidence: z.number().nullable().optional(),
   rationale: z.string().optional(),
+});
+
+const authorizationReceiptSchema = z.object({
+  kind: z.literal("authorization"),
+  receipt_id: z.string(),
+  tool: z.string(),
+  scope: z.string(),
+  args_hash: z.string(),
+  issued_at: z.string(),
+  expires_at: z.string(),
+  approver: z.string(),
+  nonce: z.string(),
+  content_hash: z.string(),
 });
 
 const toolApprovalPolicySchema = z.object({
@@ -106,7 +116,12 @@ const approvalReceiptSchema = z
   })
   .strict();
 
-export function createServer(): McpServer {
+export interface CreateServerOptions {
+  runtime?: ChpRuntime;
+}
+
+export function createServer(options: CreateServerOptions = {}): McpServer {
+  const runtime = options.runtime ?? createRuntime({ ledger: openLedger() });
   const server = new McpServer({
     name: "chp-mcp",
     version: PKG_VERSION,
@@ -116,7 +131,8 @@ export function createServer(): McpServer {
     "evaluate_spend_gate",
     "Run CHP Profile B capital/spend gate on a proposed action. Returns LOCKED, " +
       "HITL_REQUIRED, or BLOCKED with claims and a content hash. Hard policy " +
-      "violations cannot be overridden by a human.",
+      "violations cannot be overridden by a human. BLOCKED is also written as a " +
+      "structured policy_deny to the CHP-signed audit ledger.",
     {
       action: actionSchema.describe("Proposed trade / spend / mandate action"),
       policy: policySchema.describe("Gate policy (limits, HITL threshold, confidence floor)"),
@@ -127,12 +143,9 @@ export function createServer(): McpServer {
     },
     async ({ action, policy, committed_today }) => {
       try {
-        const result = evaluateGate(
-          action as ProposedAction,
-          policy as GatePolicy,
-          committed_today ?? 0,
+        return jsonContent(
+          runtime.evaluateSpend(action as ProposedAction, policy as GatePolicy, committed_today ?? 0),
         );
-        return jsonContent(result);
       } catch (error) {
         return errorContent(error);
       }
@@ -142,22 +155,170 @@ export function createServer(): McpServer {
   server.tool(
     "approve_spend",
     "Human-in-the-loop approval for a proposal that returned HITL_REQUIRED. " +
-      "Cannot approve BLOCKED / hard-rule failures (spec §6.3 / §6.5).",
+      "Cannot approve BLOCKED / hard-rule failures (spec §6.3 / §6.5). " +
+      "When tool + bound_args are supplied, mints a signed authorization receipt.",
     {
       action: actionSchema,
       policy: policySchema,
       approver: z.string().describe("Human approver identity (email or handle)"),
       committed_today: z.number().optional(),
+      tool: z
+        .string()
+        .optional()
+        .describe("Reference tool to bind the receipt to (e.g. place_equity_order)"),
+      scope: z.string().optional(),
+      bound_args: z.record(z.unknown()).optional().describe("Canonical args the receipt will authorize"),
+      ttl_seconds: z.number().optional().describe("Receipt lifetime (default 300)"),
     },
-    async ({ action, policy, approver, committed_today }) => {
+    async ({ action, policy, approver, committed_today, tool, scope, bound_args, ttl_seconds }) => {
       try {
-        const result = approveHuman(
-          action as ProposedAction,
-          policy as GatePolicy,
-          approver,
-          committed_today ?? 0,
+        const bind =
+          tool && bound_args
+            ? { tool, scope, args: bound_args as Record<string, unknown>, ttlSeconds: ttl_seconds }
+            : undefined;
+        return jsonContent(
+          runtime.approveSpend(
+            action as ProposedAction,
+            policy as GatePolicy,
+            approver,
+            committed_today ?? 0,
+            bind,
+          ),
         );
-        return jsonContent(result);
+      } catch (error) {
+        return errorContent(error);
+      }
+    },
+  );
+
+  server.tool(
+    "request_authorization",
+    "Request a signed authorization receipt for a scoped reference tool " +
+      "(place_equity_order, wire_treasury_transfer, rebalance_portfolio). " +
+      "Auto-lock mints a receipt; HITL_REQUIRED waits for approver; hard fails " +
+      "return a structured deny that is already on the audit ledger.",
+    {
+      tool: z.string().describe("Gated reference tool name"),
+      args: z.record(z.unknown()).describe("Tool args that will be bound into the receipt"),
+      policy: policySchema.optional(),
+      scope: z.string().optional(),
+      approver: z.string().optional().describe("Required when the gate returns HITL_REQUIRED"),
+      committed_today: z.number().optional(),
+      ttl_seconds: z.number().optional(),
+    },
+    async ({ tool, args, policy, scope, approver, committed_today, ttl_seconds }) => {
+      try {
+        const result = runtime.requestAuthorization({
+          tool,
+          args: args as Record<string, unknown>,
+          policy,
+          scope,
+          approver,
+          committedToday: committed_today,
+          ttlSeconds: ttl_seconds,
+        });
+        return jsonContent(result, result.ok === false && !("pending" in result && result.pending));
+      } catch (error) {
+        return errorContent(error);
+      }
+    },
+  );
+
+  server.tool(
+    "place_equity_order",
+    "Synthetic equity order (scope trading:equities:place). No live venue. " +
+      "Requires a signed authorization receipt bound to these args. Receipt is " +
+      "optional on the wire so a missing receipt becomes a logged missing_receipt deny.",
+    {
+      symbol: z.string(),
+      side: z.enum(["BUY", "SELL"]),
+      quantity: z.number(),
+      notional: z.number(),
+      limit_price: z.number().optional(),
+      confidence: z.number().optional(),
+      rationale: z.string().optional(),
+      receipt: authorizationReceiptSchema.optional(),
+    },
+    async (args) => {
+      try {
+        const { receipt, ...order } = args;
+        const result = runtime.executeGated(
+          "place_equity_order",
+          order as Record<string, unknown>,
+          receipt as AuthorizationReceipt | undefined,
+        );
+        return jsonContent(result, !result.ok);
+      } catch (error) {
+        return errorContent(error);
+      }
+    },
+  );
+
+  server.tool(
+    "wire_treasury_transfer",
+    "Synthetic treasury wire (scope treasury:wire). Default policy always " +
+      "requires a human-issued receipt. No live bank rail. Missing receipt is a " +
+      "logged deny, not a bare MCP error string.",
+    {
+      from_account: z.string(),
+      to_account: z.string(),
+      amount: z.number(),
+      currency: z.string().optional(),
+      memo: z.string().optional(),
+      confidence: z.number().optional(),
+      receipt: authorizationReceiptSchema.optional(),
+    },
+    async (args) => {
+      try {
+        const { receipt, ...wire } = args;
+        const result = runtime.executeGated(
+          "wire_treasury_transfer",
+          wire as Record<string, unknown>,
+          receipt as AuthorizationReceipt | undefined,
+        );
+        return jsonContent(result, !result.ok);
+      } catch (error) {
+        return errorContent(error);
+      }
+    },
+  );
+
+  server.tool(
+    "rebalance_portfolio",
+    "Synthetic portfolio rebalance (scope portfolio:rebalance). No live desk. " +
+      "Requires a signed authorization receipt; HITL at/above $1,000 notional.",
+    {
+      portfolio_id: z.string(),
+      target_weights: z.record(z.number()).optional(),
+      notional: z.number(),
+      confidence: z.number().optional(),
+      receipt: authorizationReceiptSchema.optional(),
+    },
+    async (args) => {
+      try {
+        const { receipt, ...rebalance } = args;
+        const result = runtime.executeGated(
+          "rebalance_portfolio",
+          rebalance as Record<string, unknown>,
+          receipt as AuthorizationReceipt | undefined,
+        );
+        return jsonContent(result, !result.ok);
+      } catch (error) {
+        return errorContent(error);
+      }
+    },
+  );
+
+  server.tool(
+    "inspect_audit_ledger",
+    "Read the CHP-signed deny / authorize / execute ledger and verify the chain. " +
+      "Also lists the synthetic scoped reference tools.",
+    {
+      limit: z.number().optional().describe("Max trailing entries (default 50)"),
+    },
+    async ({ limit }) => {
+      try {
+        return jsonContent(runtime.inspectLedger(limit ?? 50));
       } catch (error) {
         return errorContent(error);
       }
@@ -279,6 +440,7 @@ export function createServer(): McpServer {
         chp_profile: "B",
         chp_version: CHP_VERSION,
         engine: "@cubiczan/chp",
+        deny_reason_codes: [...DENY_REASON_CODES],
         receipt_schema: "chp.tool_approval_receipt/1",
         receipt_key_env: RECEIPT_KEY_ENV,
       }),
@@ -286,3 +448,6 @@ export function createServer(): McpServer {
 
   return server;
 }
+
+export { createRuntime, ChpRuntime } from "./runtime.js";
+export { MemoryLedger, FileLedger, openLedger } from "./audit.js";

@@ -4,7 +4,8 @@
 
 
 One-command MCP install for **CHP Profile B** spend / capital gates and
-**tool-approval receipts** (an allowlist is not authorization).
+**tool-approval receipts** (an allowlist is not authorization), plus a
+**structured deny ledger** and receipt-gated finance tools.
 
 [![MCP Registry](https://img.shields.io/badge/MCP_Registry-io.github.icohangar--ops%2Fchp--mcp-00C4B4)](https://registry.modelcontextprotocol.io)
 [![npm](https://img.shields.io/npm/v/@cubiczan/chp-mcp)](https://www.npmjs.com/package/@cubiczan/chp-mcp)
@@ -25,9 +26,14 @@ MCP client (Cursor / Claude / …)
 │  MCP server (transport)   │  ← you are here (@cubiczan/chp-mcp)
 │  evaluate_spend_gate      │
 │  approve_spend            │
-│  evaluate_tool_approval   │
+│  evaluate_tool_approval   │  allowlist ≠ authorization
 │  issue_approval_receipt   │
 │  authorize_tool_call      │
+│  request_authorization    │  finance-tool receipt / HITL / deny
+│  place_equity_order       │  scoped + receipt-gated (synthetic)
+│  wire_treasury_transfer   │
+│  rebalance_portfolio      │
+│  inspect_audit_ledger     │  CHP-signed deny / authorize / execute
 │  chp_content_hash         │
 └─────────────┬─────────────┘
               │ depends on
@@ -73,13 +79,18 @@ claude mcp add chp -- npx -y @cubiczan/chp-mcp
 
 | Tool | Maps to | Purpose |
 |------|---------|---------|
-| `evaluate_spend_gate` | `evaluateGate` | LOCKED / HITL_REQUIRED / BLOCKED + claims + content hash |
-| `approve_spend` | `approveHuman` | Human lock when HITL_REQUIRED (cannot override hard fails) |
+| `evaluate_spend_gate` | `evaluateGate` | LOCKED / HITL_REQUIRED / BLOCKED + claims + content hash. `BLOCKED` is also a ledgered `policy_deny`. |
+| `approve_spend` | `approveHuman` | Human lock when HITL_REQUIRED (cannot override hard fails). Optional `tool` + `bound_args` mint a signed receipt. |
 | `evaluate_tool_approval` | `evaluateToolApproval` | Allowlist is a pre-filter; a bound receipt is still required |
 | `issue_approval_receipt` | `issueApprovalReceipt` | Human allow/deny → HMAC-signed receipt + decision log |
 | `authorize_tool_call` | `authorizeToolCall` | Consume a receipt; deny on drift, expiry, replay, or a bad MAC |
+| `request_authorization` | runtime | Mint a receipt bound to a scoped reference tool, or return HITL / structured deny |
+| `place_equity_order` | reference | Synthetic equity order — scope `trading:equities:place`, receipt required |
+| `wire_treasury_transfer` | reference | Synthetic treasury wire — scope `treasury:wire`, always HITL |
+| `rebalance_portfolio` | reference | Synthetic rebalance — scope `portfolio:rebalance` |
+| `inspect_audit_ledger` | ledger | Trailing CHP-chained deny / authorize / execute entries |
 | `chp_content_hash` | `contentHash` | Float-aware canonical SHA-256 |
-| `chp_version` | — | Server + protocol versions |
+| `chp_version` | — | Server + protocol versions + deny reason codes + receipt schema |
 
 ### Example — evaluate a spend
 
@@ -218,12 +229,102 @@ These never produce a usable allow receipt:
 
 Fail-closed: `deny_on_ambiguity` cannot be turned off.
 
+## Cookbook — deny telemetry and receipts
+
+MCP denials are usually a bare error string. That string is gone when the
+client disconnects. This server treats a refuse as a **structured event**
+that must hit a CHP-signed ledger *before* the caller sees it.
+
+Finance tools (`place_equity_order`, `wire_treasury_transfer`,
+`rebalance_portfolio`) are synthetic — no live venue or bank rail — and
+use a separate `kind: "authorization"` receipt bound to tool, scope, and
+args hash. That is not the same object as a `chp.tool_approval_receipt`.
+
+### Reason codes
+
+| Code | When |
+|------|------|
+| `policy_deny` | Hard CHP rule failed (`max_notional`, daily cap, …) |
+| `expired` | Receipt `expires_at` is in the past |
+| `replay` | Receipt already consumed by a successful execute |
+| `args_changed` | Tool, scope, or args hash no longer matches the receipt |
+| `missing_receipt` | No receipt, or the content hash does not verify |
+| `ambiguous_policy` | Unknown tool, scope mismatch, or incomplete policy |
+
+Signing is the existing Profile B primitives: `contentHash` on the
+receipt / ledger payload, `chainHash` between ledger rows. Set
+`CHP_AUDIT_LEDGER` to a JSONL path (default `./data/chp-audit.jsonl`),
+or `:memory:` for tests.
+
+### 1. Request a bound receipt
+
+Under the HITL threshold the gate auto-locks and mints a receipt. At or
+above it, pass `approver` (or call `approve_spend` with `tool` +
+`bound_args`).
+
+```jsonc
+// tools/call request_authorization
+{
+  "tool": "place_equity_order",
+  "args": {
+    "symbol": "AAPL",
+    "side": "BUY",
+    "quantity": 10,
+    "notional": 300,
+    "confidence": 0.9
+  },
+  "approver": "cfo@example.com"
+}
+```
+
+Treasury wires use `hitl_threshold: 0`. A request without `approver`
+returns `HITL_REQUIRED` and **no** receipt — that is the approval gate,
+not a weather-API demo.
+
+### 2. Execute only with that receipt
+
+`receipt` is optional on the wire so a missing token is a logged
+`missing_receipt` deny, not a schema 400 that never hits the ledger.
+
+```jsonc
+// tools/call place_equity_order
+{
+  "symbol": "AAPL",
+  "side": "BUY",
+  "quantity": 10,
+  "notional": 300,
+  "confidence": 0.9,
+  "receipt": { "kind": "authorization", "receipt_id": "…", "content_hash": "…" }
+}
+```
+
+Change `notional` or `quantity` after approve → `args_changed`, and the
+ledger has the deny. Call again with the same receipt → `replay`.
+Call with no receipt → `missing_receipt`. All three are durable.
+
+### 3. Inspect the chain
+
+```jsonc
+// tools/call inspect_audit_ledger
+{ "limit": 20 }
+```
+
+Each row carries `content_hash` and `sig = chainHash(prev_sig, { seq, ts, event, content_hash })`.
+`chain.ok` is false if anyone rewrote history.
+
+### Tests
+
 ```bash
 npm test
 ```
 
-This Cubiczan mirror may omit GitHub Actions; run the suite locally
-(`npm test` builds, then `node --test dist/*.test.js`).
+This Cubiczan mirror may omit GitHub Actions; run the suite locally.
+`npm test` builds, then runs `node --test dist/*.test.js` (approval
+receipts) and `node --import tsx --test test/**/*.test.ts` (deny
+ledger). Invariants covered: an unlogged deny is impossible (ledger
+failure throws instead of returning a deny object); changed args after
+approve deny; a receipt is required for every gated reference tool;
+allowlist is not authorization.
 
 ## Related
 
