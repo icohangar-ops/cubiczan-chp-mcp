@@ -9,6 +9,9 @@
  * (same payload discipline as the audit-ledger `sig` /
  * {@link import("@cubiczan/chp").contentHash} family).
  *
+ * `args_hash` covers host-injected ∪ model arguments when the host binds
+ * fields via `host_bound` or `_meta.cubiczan.host_bound`.
+ *
  * Fail-closed: missing, wildcard, or unparseable fields are ambiguous and
  * must never produce a usable allow receipt.
  */

@@ -1,0 +1,26 @@
+{
+  "version": "host-injected-1",
+  "allowed_tools": [
+    "search.azure_ai",
+    "search.pinecone"
+  ],
+  "always_require_receipt": [
+    "search.azure_ai",
+    "search.pinecone"
+  ],
+  "tool_risk": {
+    "search.azure_ai": "high",
+    "search.pinecone": "high"
+  },
+  "default_risk": "high",
+  "max_ttl_seconds": 300,
+  "host_bound_fields": {
+    "search.azure_ai": ["index_name", "tenant_id"],
+    "search.pinecone": ["index_name", "tenant_id"]
+  },
+  "allowed_resources": {
+    "search.azure_ai": ["tenant:acme"],
+    "search.pinecone": ["tenant:acme"]
+  },
+  "deny_on_ambiguity": true
+}

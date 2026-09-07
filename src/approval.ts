@@ -3,8 +3,9 @@
  *
  * Being on `allowed_tools` is a necessary pre-filter, never a grant.
  * Execution requires a signed receipt whose bindings still match the
- * call that is about to run. Ambiguity, expiry, replay, and argument
- * drift all deny.
+ * call that is about to run. Host-injected fields (index, tenant, …)
+ * are merged into `args_hash`; the model cannot override them.
+ * Ambiguity, expiry, replay, and argument drift all deny.
  */
 
 import type { Claim } from "@cubiczan/chp";
@@ -23,6 +24,7 @@ import {
   type ReceiptDecision,
   type ReceiptRisk,
 } from "./receipt.js";
+import { bindHostInjectedArgs } from "./host-bind.js";
 import { InMemoryReplayStore, type ReplayStore } from "./replay.js";
 
 export type AuthorizationState = "AUTHORIZED" | "RECEIPT_REQUIRED" | "DENIED";
@@ -41,7 +43,8 @@ export type DenyCode =
   | "risk_mismatch"
   | "human_denied"
   | "missing_receipt"
-  | "ttl_exceeds_policy";
+  | "ttl_exceeds_policy"
+  | "host_bound_override";
 
 export interface ToolApprovalPolicy {
   version: string;
@@ -54,6 +57,11 @@ export interface ToolApprovalPolicy {
   max_ttl_seconds?: number;
   /** Optional per-tool tenant/resource allowlist. */
   allowed_resources?: Record<string, string[]>;
+  /**
+   * Per-tool fields the host must inject (index, tenant, …).
+   * The model cannot override them. Allowlist membership is still not a grant.
+   */
+  host_bound_fields?: Record<string, string[]>;
   /** Always treated as true; present so example policies document fail-closed. */
   deny_on_ambiguity?: boolean;
 }
@@ -195,6 +203,18 @@ export function parseToolApprovalPolicy(value: unknown): ToolApprovalPolicy | un
       if (!Array.isArray(list) || list.some((item) => typeof item !== "string")) return undefined;
     }
   }
+  if (rec.host_bound_fields !== undefined) {
+    if (
+      rec.host_bound_fields === null ||
+      typeof rec.host_bound_fields !== "object" ||
+      Array.isArray(rec.host_bound_fields)
+    ) {
+      return undefined;
+    }
+    for (const list of Object.values(rec.host_bound_fields as Record<string, unknown>)) {
+      if (!Array.isArray(list) || list.some((item) => typeof item !== "string")) return undefined;
+    }
+  }
 
   return {
     version: rec.version,
@@ -204,6 +224,7 @@ export function parseToolApprovalPolicy(value: unknown): ToolApprovalPolicy | un
     default_risk: rec.default_risk as ReceiptRisk | undefined,
     max_ttl_seconds: rec.max_ttl_seconds as number | undefined,
     allowed_resources: rec.allowed_resources as Record<string, string[]> | undefined,
+    host_bound_fields: rec.host_bound_fields as Record<string, string[]> | undefined,
     deny_on_ambiguity: rec.deny_on_ambiguity === false ? false : true,
   };
 }
@@ -212,6 +233,10 @@ export interface ProposedToolCall {
   tool: string;
   resource: string;
   arguments?: unknown;
+  /** Explicit host-injected fields; overlay `_meta.cubiczan.host_bound`. */
+  host_bound?: Record<string, unknown>;
+  /** MCP request `_meta` (gateway `cubiczan.principal` / `host_bound`). */
+  _meta?: unknown;
 }
 
 function inspectCall(
@@ -252,9 +277,18 @@ function inspectCall(
   }
   claims.push(claim("concrete-args", true, "arguments present"));
 
+  const bound = bindHostInjectedArgs(call, policy);
+  claims.push(...bound.claims);
+  if (!bound.ok) {
+    return {
+      claims,
+      deny: denied(claims, bound.deny_code, bound.reason),
+    };
+  }
+
   let args_hash: string;
   try {
-    args_hash = hashToolArgs(call.arguments);
+    args_hash = hashToolArgs(bound.merged);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     claims.push(claim("args-hash", false, message));

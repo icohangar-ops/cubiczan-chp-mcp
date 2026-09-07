@@ -12,6 +12,8 @@ high-consequence actions without vendoring protocol code.
 - TypeScript ESM (`NodeNext`), Zod schemas on MCP tool inputs
 - Signing and canonicalization come from `@cubiczan/chp` (`contentHash`,
   `chainHash`) — do not invent a parallel hash scheme
+- Host-injected `_meta.cubiczan` is a documented contract with
+  `@cubiczan/governed-mcp-gateway`, not a runtime dependency
 - Keep the published tool names `evaluate_spend_gate` and `approve_spend`
   backward compatible; new fields are additive
 - Gated reference tools are synthetic (no live brokerage or bank rails)
