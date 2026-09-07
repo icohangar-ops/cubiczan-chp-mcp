@@ -88,13 +88,25 @@ const toolApprovalPolicySchema = z.object({
   default_risk: z.enum(["low", "medium", "high", "critical"]).optional(),
   max_ttl_seconds: z.number().optional(),
   allowed_resources: z.record(z.array(z.string())).optional(),
+  host_bound_fields: z
+    .record(z.array(z.string()))
+    .optional()
+    .describe("Per-tool fields the host must inject; the model cannot override them"),
   deny_on_ambiguity: z.boolean().optional(),
 });
 
 const proposedToolCallSchema = z.object({
   tool: z.string().describe("Concrete MCP tool name (no wildcards)"),
   resource: z.string().describe("Tenant / resource binding (no wildcards)"),
-  arguments: z.unknown().describe("Tool arguments; hashed with CHP float-aware canonical JSON"),
+  arguments: z.unknown().describe("Model-chosen args; hashed together with host-injected fields"),
+  host_bound: z
+    .record(z.unknown())
+    .optional()
+    .describe("Host-injected bound args (index, tenant, …); overlay _meta.cubiczan.host_bound"),
+  _meta: z
+    .unknown()
+    .optional()
+    .describe("MCP request _meta; reads cubiczan.principal and cubiczan.host_bound"),
 });
 
 const approvalReceiptSchema = z
@@ -328,8 +340,10 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
   server.tool(
     "evaluate_tool_approval",
     "Evaluate a proposed MCP tool call. A managed allowlist is not a grant — " +
-      "allowlisted tools still return RECEIPT_REQUIRED. Wildcards, missing " +
-      "resource, or unparseable arguments deny on ambiguity.",
+      "allowlisted tools still return RECEIPT_REQUIRED. Host-injected fields " +
+      "(host_bound / _meta.cubiczan.host_bound) are merged into args_hash; " +
+      "the model cannot override them. Wildcards, missing resource, or " +
+      "unparseable arguments deny on ambiguity.",
     {
       call: proposedToolCallSchema.describe("Proposed tool, tenant/resource, and arguments"),
       policy: toolApprovalPolicySchema.describe(
@@ -348,7 +362,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
   server.tool(
     "issue_approval_receipt",
     "Record a human allow/deny and return a signed approval receipt. The MAC " +
-      `covers actor, tool, resource, args hash, policy version, risk, expiry, ` +
+      `covers actor, tool, resource, args hash (host ∪ model), policy version, risk, expiry, ` +
       "decision, and nonce (HMAC-SHA256 over CHP canonical JSON). Signing key " +
       `from ${RECEIPT_KEY_ENV} / AUDIT_LEDGER_KEY, or the documented insecure default.`,
     {
@@ -386,8 +400,9 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
   server.tool(
     "authorize_tool_call",
     "Authorize a tool call against a previously issued receipt. Changed " +
-      "arguments, expired or replayed receipts, MAC failure, and binding " +
-      "mismatch all deny. Presenting only an allowlist match denies with " +
+      "arguments (including host-bound tenant/index), expired or replayed " +
+      "receipts, MAC failure, host-bound override, and binding mismatch all " +
+      "deny. Presenting only an allowlist match denies with " +
       "allowlist_is_not_authorization.",
     {
       call: proposedToolCallSchema.describe("Call about to execute — args are re-hashed"),

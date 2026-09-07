@@ -81,9 +81,9 @@ claude mcp add chp -- npx -y @cubiczan/chp-mcp
 |------|---------|---------|
 | `evaluate_spend_gate` | `evaluateGate` | LOCKED / HITL_REQUIRED / BLOCKED + claims + content hash. `BLOCKED` is also a ledgered `policy_deny`. |
 | `approve_spend` | `approveHuman` | Human lock when HITL_REQUIRED (cannot override hard fails). Optional `tool` + `bound_args` mint a signed receipt. |
-| `evaluate_tool_approval` | `evaluateToolApproval` | Allowlist is a pre-filter; a bound receipt is still required |
+| `evaluate_tool_approval` | `evaluateToolApproval` | Allowlist is a pre-filter; host-bound fields merge into `args_hash`; a receipt is still required |
 | `issue_approval_receipt` | `issueApprovalReceipt` | Human allow/deny → HMAC-signed receipt + decision log |
-| `authorize_tool_call` | `authorizeToolCall` | Consume a receipt; deny on drift, expiry, replay, or a bad MAC |
+| `authorize_tool_call` | `authorizeToolCall` | Consume a receipt; deny on drift, host-bound override, expiry, replay, or a bad MAC |
 | `request_authorization` | runtime | Mint a receipt bound to a scoped reference tool, or return HITL / structured deny |
 | `place_equity_order` | reference | Synthetic equity order — scope `trading:equities:place`, receipt required |
 | `wire_treasury_transfer` | reference | Synthetic treasury wire — scope `treasury:wire`, always HITL |
@@ -125,7 +125,7 @@ Receipts are HMAC-SHA256 over [CHP canonical JSON](https://www.npmjs.com/package
 | `actor` | Human who allowed or denied |
 | `tool` | Concrete tool name (no `*`) |
 | `resource` | Tenant / resource binding (no `*`) |
-| `args_hash` | `contentHash(arguments, { floatAware: true })` |
+| `args_hash` | `contentHash(host ∪ model arguments, { floatAware: true })` |
 | `policy_version` | Policy the human saw |
 | `risk` | Policy risk for that tool |
 | `issued_at` / `expiry` | Lifetime |
@@ -140,6 +140,9 @@ fine for the local cookbook, not for production.
 Example policy: [`examples/tool-approval-policy.json`](examples/tool-approval-policy.json).
 `stripe.create_charge` is **on the allowlist** and still cannot run
 without a receipt bound to `acct_live_acme` and the exact charge args.
+Host-injected tenant/index bindings use
+[`examples/host-injected-policy.json`](examples/host-injected-policy.json)
+(see the host-injected args cookbook below).
 
 ```json
 {
@@ -228,6 +231,125 @@ These never produce a usable allow receipt:
 - extra keys on a receipt (strict parse)
 
 Fail-closed: `deny_on_ambiguity` cannot be turned off.
+
+## Cookbook — host-injected args + gateway `_meta`
+
+Semantic Kernel and other hosts need to pass **index, key, and tenant**
+without letting the model choose them
+([SO-style routing](https://stackoverflow.com/questions/79748920/how-to-pass-dynamic-parameters-eg-index-name-key-from-semantic-kernel-to-mcp)).
+Putting those fields on the tool schema so the LLM can “decide” is the
+bug. An MCP allowlist does not fix it: the tool name can stay
+allowlisted while the model swaps `index_name` to another tenant.
+
+The host (or a gateway in front of this server) injects bound fields.
+This package hashes **host ∪ model** arguments into the receipt and
+denies when the model overrides a host-bound field. The allowlist is
+still only a pre-filter.
+
+### Contract — `_meta.cubiczan` (no hard dependency)
+
+[`@cubiczan/governed-mcp-gateway`](https://www.npmjs.com/package/@cubiczan/governed-mcp-gateway)
+already injects identity on every `tools/call` and SSE frame:
+
+```json
+{
+  "_meta": {
+    "cubiczan": {
+      "principal": {
+        "id": "agt_search",
+        "kind": "agent",
+        "orgId": "org_acme",
+        "displayName": "Search Runner"
+      }
+    }
+  }
+}
+```
+
+This server does **not** import that package. It reads the same
+envelope. Hosts MAY add `host_bound` next to `principal`. A trusted
+gateway should overwrite `_meta.cubiczan` so the model cannot self-attest.
+
+```json
+{
+  "_meta": {
+    "cubiczan": {
+      "principal": { "id": "agt_search", "kind": "agent", "orgId": "org_acme" },
+      "host_bound": { "tenant_id": "acme", "index_name": "prod-docs" }
+    }
+  }
+}
+```
+
+Library callers can also pass `host_bound` on the proposed call
+(explicit keys overlay `_meta`). Policy
+[`examples/host-injected-policy.json`](examples/host-injected-policy.json)
+declares `host_bound_fields` so `index_name` and `tenant_id` must be
+host-injected and concrete. If `tenant_id` is declared and omitted,
+`_meta.cubiczan.principal.orgId` may fill it.
+
+```text
+model args ──┐
+             ├─ override check ─→ deny host_bound_override
+host_bound ──┘         │
+                       ▼
+              merged args → args_hash → receipt MAC
+                       │
+allowlist ──── pre-filter only (never a grant)
+```
+
+### 1. Host injects index + tenant — allowlist still denied
+
+The model chose `query` / `top_k`. The host chose the index.
+
+```jsonc
+// tools/call evaluate_tool_approval
+{
+  "call": {
+    "tool": "search.azure_ai",
+    "resource": "tenant:acme",
+    "arguments": { "query": "Q3 revenue", "top_k": 5 },
+    "_meta": {
+      "cubiczan": {
+        "principal": { "id": "agt_search", "kind": "agent", "orgId": "org_acme" },
+        "host_bound": { "tenant_id": "acme", "index_name": "prod-docs" }
+      }
+    }
+  },
+  "policy": { "$ref": "examples/host-injected-policy.json" }
+}
+```
+
+Result: `RECEIPT_REQUIRED`, `deny_code: "allowlist_is_not_authorization"`.
+`args_hash` is `contentHash` of
+`{ query, top_k, tenant_id, index_name }` — not the model object alone.
+
+### 2. Model changes a host-bound field — denied
+
+Same host `_meta`, but the model adds `"index_name": "other-index"`.
+
+```jsonc
+"arguments": { "query": "Q3 revenue", "top_k": 5, "index_name": "other-index" }
+```
+
+`evaluate_tool_approval`, `issue_approval_receipt` (`decision: "allow"`),
+and `authorize_tool_call` all return `DENIED` /
+`host_bound_override`. Matching the host value is not an override.
+
+### 3. Human allow — then authorize the merged args
+
+Issue a receipt for the host-injected call. Authorize with the **same**
+`arguments` and `_meta`. Result: `AUTHORIZED`. Change `query` after
+approve → `changed_arguments`. Change `index_name` in model args →
+`host_bound_override`. Omit declared host fields → `ambiguous`.
+
+### 4. Semantic Kernel / host wiring
+
+Do the routing in the host, not the model: disable auto-invoke, then
+inject index/tenant (or put a gateway in front that writes
+`_meta.cubiczan.host_bound`) before `evaluate_tool_approval` /
+`authorize_tool_call`. Secrets such as API keys belong in the host or
+the gateway vault — not in the tool schema the LLM sees.
 
 ## Cookbook — deny telemetry and receipts
 
@@ -320,11 +442,13 @@ npm test
 
 This Cubiczan mirror may omit GitHub Actions; run the suite locally.
 `npm test` builds, then runs `node --test dist/*.test.js` (approval
-receipts) and `node --import tsx --test test/**/*.test.ts` (deny
-ledger). Invariants covered: an unlogged deny is impossible (ledger
-failure throws instead of returning a deny object); changed args after
-approve deny; a receipt is required for every gated reference tool;
-allowlist is not authorization.
+receipts + host-injected bindings) and
+`node --import tsx --test test/**/*.test.ts` (deny ledger). Invariants
+covered: an unlogged deny is impossible (ledger failure throws instead
+of returning a deny object); changed args after approve deny; a receipt
+is required for every gated reference tool; allowlist is not
+authorization; host-bound tenant/index cannot be overridden by the
+model; receipt `args_hash` covers host ∪ model args.
 
 ## Related
 
