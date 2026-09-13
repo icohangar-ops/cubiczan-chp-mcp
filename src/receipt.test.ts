@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { CHP_VERSION, canonicalJson, contentHash } from "@cubiczan/chp";
+import { resolveConfinedPath } from "./audit.js";
 import {
   InMemoryDecisionLog,
   authorizeToolCall,
@@ -24,12 +25,10 @@ import {
 } from "./receipt.js";
 import { InMemoryReplayStore } from "./replay.js";
 
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const examplePolicy = parseToolApprovalPolicy(
   JSON.parse(
-    readFileSync(
-      join(dirname(fileURLToPath(import.meta.url)), "..", "examples", "tool-approval-policy.json"),
-      "utf8",
-    ),
+    readFileSync(resolveConfinedPath("examples/tool-approval-policy.json", repoRoot), "utf8"),
   ),
 );
 
