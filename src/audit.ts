@@ -7,7 +7,7 @@
 
 import { chainHash, contentHash } from "@cubiczan/chp";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 
 export const DENY_REASON_CODES = [
   "policy_deny",
@@ -295,11 +295,35 @@ export class MemoryLedger implements AuditLedger {
   }
 }
 
-export class FileLedger implements AuditLedger {
-  private readonly log: LedgerEntry[] = [];
+/** Directory that filesystem ledger paths must stay under. */
+export function defaultFsBaseDir(): string {
+  return process.cwd();
+}
 
-  constructor(private readonly filePath: string) {
-    this.log = loadJsonl(filePath);
+/**
+ * Resolve `filePath` against `baseDir` and reject traversal / escape.
+ * In-tree paths (including those that normalize with `..`) are kept.
+ */
+export function resolveConfinedPath(filePath: string, baseDir = defaultFsBaseDir()): string {
+  if (!filePath) {
+    throw new Error("path must not be empty");
+  }
+  const base = resolve(baseDir);
+  const resolved = resolve(base, filePath);
+  const rel = relative(base, resolved);
+  if (rel.startsWith("..") || isAbsolute(rel)) {
+    throw new Error("path escapes the allowed directory");
+  }
+  return resolved;
+}
+
+export class FileLedger implements AuditLedger {
+  private readonly filePath: string;
+  private readonly log: LedgerEntry[];
+
+  constructor(filePath: string) {
+    this.filePath = resolveConfinedPath(filePath);
+    this.log = loadJsonl(this.filePath);
   }
 
   append(input: LedgerAppendInput): LedgerEntry {
@@ -316,8 +340,9 @@ export class FileLedger implements AuditLedger {
 }
 
 function loadJsonl(filePath: string): LedgerEntry[] {
-  if (!existsSync(filePath)) return [];
-  const text = readFileSync(filePath, "utf8").trim();
+  const confined = resolveConfinedPath(filePath);
+  if (!existsSync(confined)) return [];
+  const text = readFileSync(confined, "utf8").trim();
   if (!text) return [];
   return text.split("\n").map((line) => JSON.parse(line) as LedgerEntry);
 }
@@ -349,7 +374,9 @@ export class ReceiptStore {
 }
 
 export function defaultLedgerPath(): string {
-  return process.env.CHP_AUDIT_LEDGER ?? `${process.cwd()}/data/chp-audit.jsonl`;
+  const raw = process.env.CHP_AUDIT_LEDGER ?? "data/chp-audit.jsonl";
+  if (raw === ":memory:") return raw;
+  return resolveConfinedPath(raw);
 }
 
 export function openLedger(path = defaultLedgerPath()): AuditLedger {

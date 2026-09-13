@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { contentHash } from "@cubiczan/chp";
+import { resolveConfinedPath } from "./audit.js";
 import {
   InMemoryDecisionLog,
   authorizeToolCall,
@@ -19,12 +20,10 @@ import {
 import { hashToolArgs } from "./receipt.js";
 import { InMemoryReplayStore } from "./replay.js";
 
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const hostPolicy = parseToolApprovalPolicy(
   JSON.parse(
-    readFileSync(
-      join(dirname(fileURLToPath(import.meta.url)), "..", "examples", "host-injected-policy.json"),
-      "utf8",
-    ),
+    readFileSync(resolveConfinedPath("examples/host-injected-policy.json", repoRoot), "utf8"),
   ),
 );
 
